@@ -1,0 +1,96 @@
+name: Dump Database Schemas
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'database/migrations/**'
+
+concurrency:
+  group: db-schema-dump
+  cancel-in-progress: true
+
+jobs:
+  db-schemas:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: forge
+          MYSQL_DATABASE: forge
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Setup env file
+        run: php -r "file_exists('.env') || copy('.env.ci', '.env');"
+
+      - name: Set up composer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install PHP Dependencies
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      - name: Generate key
+        run: php artisan key:generate
+
+      - name: Remove existing schema files
+        run: |
+          rm -f database/schema/sqlite-schema.sql
+          rm -f database/schema/mysql-schema.sql
+
+      - name: Create Empty SQLite database
+        run: |
+          mkdir -p database
+          touch database/database.sqlite
+
+      - name: Run SQLite migrations
+        run: php artisan migrate:fresh --database=sqlite
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: database/database.sqlite
+
+      - name: Dump SQLite schema file
+        run: php artisan schema:dump --database=sqlite
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: database/database.sqlite
+
+      - name: Run MySQL migrations
+        run: php artisan migrate:fresh --database=mysql
+
+      - name: Dump MySQL schema file
+        run: php artisan schema:dump --database=mysql
+
+      - name: Create Pull Request
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          base: main
+          branch: db-schema-dump-${{ github.run_number }}
+          commit-message: Updated db schema files with latest migrations
+          title: Automated Schema Update
+          labels: auto-branch
+          body: |
+            This is an auto-generated PR with updates to the database dump files.
+
+            It will be automatically merged immediately.
+
+      - name: Automatically merge PR
+        if: steps.cpr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge ${{ steps.cpr.outputs.pull-request-number }} --auto --merge

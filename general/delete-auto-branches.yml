@@ -1,0 +1,20 @@
+name: Delete Automatically Created Branches
+
+on:
+  pull_request:
+    types: [ closed ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  delete-auto-branches:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == false && contains(github.event.pull_request.labels.*.name, 'auto-branch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete Branch - ${{ github.event.pull_request.head.ref }}
+        run: git push origin --delete ${{ github.event.pull_request.head.ref }}

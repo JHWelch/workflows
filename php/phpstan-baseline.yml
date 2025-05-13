@@ -1,0 +1,76 @@
+name: PHPStan Test & Baseline Update
+on:
+  pull_request:
+    types: [ opened, synchronize, reopened, ready_for_review ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false || contains(github.event.pull_request.labels.*.name, 'workflows')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Setup env file
+        run: php -r "file_exists('.env') || copy('.env.ci', '.env');"
+
+      - name: Set up composer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install PHP Dependencies
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      - name: Update baseline file
+        run: composer types:baseline
+
+      - name: Count updated lines
+        run: |
+          CHANGED_LINES=$(git diff --numstat | awk '{added += $1; deleted += $2} END {print added - deleted}')
+          echo "CHANGED_LINES=$CHANGED_LINES" >> $GITHUB_ENV
+          echo $CHANGED_LINES
+          if git diff --quiet; then
+            echo "DIRTY=false" >> $GITHUB_ENV
+          else
+            echo "DIRTY=true" >> $GITHUB_ENV
+          fi
+
+      - name: Create Pull Request if Lines Removed or Equal
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        if: env.CHANGED_LINES <= 0
+        with:
+          base: ${{ github.head_ref }}
+          branch: "phpstan-baseline-pr-${{ github.run_number }}"
+          commit-message: Update phpstan-baseline to remove fixed issues
+          reviewers: ${{ github.event.pull_request.user.login }}
+          title: "PHPStan Baseline Update: ${{ github.event.pull_request.title }} (#${{ github.event.number }})"
+          labels: auto-branch
+          body: |
+            This is an auto-generated PR with updates to the PHPStan baseline file from changes in PHP files for the following PR: ${{ github.event.pull_request.html_url }}
+
+      - name: If lines are added, run PHPStan
+        if: env.CHANGED_LINES > 0 && env.DIRTY == 'true'
+        run: |
+          git reset --hard
+          composer test:types
+
+      - name: Fail workflow if Pull Request created
+        if: steps.cpr.outputs.pull-request-number
+        run: |
+          echo "The following PR was opened with phpstan-baseline changes: ${{ steps.cpr.outputs.pull-request-url }}"
+          exit 1
