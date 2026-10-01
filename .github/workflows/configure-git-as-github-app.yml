@@ -1,0 +1,57 @@
+name: Configure Git as GitHub App
+
+on:
+  workflow_call:
+    secrets:
+      client-id:
+        description: GitHub App client ID
+        required: true
+      private-key:
+        description: GitHub App private key
+        required: true
+
+jobs:
+  configure-git-as-github-app:
+    name: Configure git as GitHub App
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.app-token.outputs.token }}
+      app-slug: ${{ steps.app-token.outputs.app-slug }}
+      user-name: ${{ steps.app-user.outputs.user-name }}
+      user-email: ${{ steps.app-user.outputs.user-email }}
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.client-id }}
+          private-key: ${{ secrets.private-key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Get GitHub App user
+        id: app-user
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          USER_NAME: ${{ steps.app-token.outputs.app-slug }}[bot]
+        run: |
+          USER_ID=$(gh api "/users/$USER_NAME" --jq .id)
+          if [[ -z "$USER_ID" || "$USER_ID" == "null" ]]; then
+            echo "GitHub App user '$USER_NAME' could not be resolved." >&2
+            exit 1
+          fi
+          echo "user-name=$USER_NAME" >> "$GITHUB_OUTPUT"
+          echo "user-email=$USER_ID+$USER_NAME@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git as GitHub App user
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          USER_NAME: ${{ steps.app-user.outputs.user-name }}
+          USER_EMAIL: ${{ steps.app-user.outputs.user-email }}
+        run: |
+          git config --global user.name "$USER_NAME"
+          git config --global user.email "$USER_EMAIL"
+          gh auth setup-git
